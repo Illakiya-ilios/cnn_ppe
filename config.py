@@ -197,13 +197,19 @@ TRACK_IOU_WEIGHT = _env("TRACK_IOU_WEIGHT", 0.5, float)  # IoU vs distance blend
 TRACK_MIN_IOU = _env("TRACK_MIN_IOU", 0.1, float)        # IoU alone accepts a match
 TRACK_DIST_SCALE = _env("TRACK_DIST_SCALE", 1.5, float)  # Tolerance x person diagonal
 
-# Process every Nth frame (1 = every frame). Raise to keep real-time on CPU.
-FRAME_STRIDE = _env("FRAME_STRIDE", 1, int)
+# Process every Nth frame (1 = every frame). Default 3 keeps a heavy model
+# (e.g. yolo26m) responsive on CPU: ~3x throughput while still processing
+# enough frames/sec for stable tracking and temporal confirmation. Set to 1
+# for maximum accuracy on a fast machine/GPU, or higher if still too slow.
+FRAME_STRIDE = _env("FRAME_STRIDE", 3, int)
 
 # ---------------------------------------------------------------------------
 # Alerting
 # ---------------------------------------------------------------------------
-VIOLATION_FRAMES_BEFORE_ALERT = _env("VIOLATION_FRAMES_BEFORE_ALERT", 10, int)
+# Measured in PROCESSED frames (i.e. after FRAME_STRIDE). With the default
+# stride of 3 at ~24fps, 6 processed frames ~= 0.75s of sustained violation
+# before an alert fires -- responsive without being twitchy.
+VIOLATION_FRAMES_BEFORE_ALERT = _env("VIOLATION_FRAMES_BEFORE_ALERT", 6, int)
 ALERT_COOLDOWN_SECONDS = _env("ALERT_COOLDOWN_SECONDS", 15, int)
 
 # ---------------------------------------------------------------------------
@@ -211,7 +217,7 @@ ALERT_COOLDOWN_SECONDS = _env("ALERT_COOLDOWN_SECONDS", 15, int)
 # ---------------------------------------------------------------------------
 # A violation is only confirmed when it dominates a person's recent frames,
 # so a single missed helmet/vest detection does not raise a false alarm.
-TEMPORAL_WINDOW = _env("TEMPORAL_WINDOW", 15, int)         # frames remembered per person
+TEMPORAL_WINDOW = _env("TEMPORAL_WINDOW", 10, int)         # processed frames remembered per person
 TEMPORAL_CONFIRM_FRAC = _env("TEMPORAL_CONFIRM_FRAC", 0.6, float)  # majority needed
 TEMPORAL_MIN_FRAMES = _env("TEMPORAL_MIN_FRAMES", 5, int)  # min non-compliant frames
 

@@ -80,10 +80,20 @@ Press `q` in the preview window (or Ctrl+C) to stop. Outputs land in `output/`.
 | `--model` | Path to YOLO `.pt` weights |
 | `--device` | `cpu`, `0`, `cuda:0`, ... |
 | `--conf` | Detection confidence threshold |
-| `--stride` | Process every Nth frame (perf tuning) |
+| `--stride` | Process every Nth frame (default 3; perf tuning, see note) |
 | `--output` | Annotated video path (`none` to disable) |
 | `--no-preview` | Run headless (no window) |
 | `--log-level` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+
+## Performance (CPU)
+
+A heavy model like `yolo26m` runs ~3 fps per frame on CPU. The default
+`FRAME_STRIDE=3` processes every 3rd frame, giving ~3x smoother throughput
+(measured ~9.6 effective fps vs ~3.4 at stride 1) while still feeding the
+tracker and temporal confirmation enough frames. Lower to `1` for maximum
+accuracy on a GPU/fast machine; raise it if the preview still lags. The
+violation/temporal thresholds are counted in *processed* frames, so they stay
+consistent as you change the stride.
 
 ## Configuration
 
