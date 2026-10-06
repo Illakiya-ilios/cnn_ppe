@@ -202,36 +202,30 @@ class PPEDetector:
             detected as absent (e.g. "!helmet" from a "no-helmet" box)
 
         State logic per required item:
-          - PRESENT: the item was detected on the person.
-          - ABSENT:  the item was NOT detected AND we have reliable absence
-                     evidence for it -- either an explicit negative detection
-                     ("!helmet"), or the item is configured as reliably-absent-
-                     when-missing. ABSENT is a genuine violation signal.
-          - UNKNOWN: the item was not detected and we have no trustworthy
-                     absence evidence (e.g. vest, where a missed detection is
-                     indistinguishable from a truly absent vest). UNKNOWN must
-                     NOT be treated as a violation.
+          - PRESENT: the positive item was detected on the person.
+          - ABSENT:  the explicit negative detection ("!helmet") was found.
+                     This is the ONLY path to ABSENT — a genuine violation.
+          - UNKNOWN: neither the item nor its negative class was detected.
+                     The model simply didn't produce evidence either way.
+                     UNKNOWN must NEVER be treated as a violation.
 
-        Items that have a configured negative class (self.negative_classes
-        values) are trusted on absence-by-omission too, because the model
-        actively reasons about that item.
+        Previous versions incorrectly treated "neither detected" as ABSENT for
+        items that had a negative class, under the assumption that the model
+        "actively reasons" about them. That is wrong — the model can fail to
+        detect either class due to occlusion, angle, lighting, or domain
+        mismatch. Only an explicit no_X detection is evidence of absence.
         """
         positives = {d for d in detected_items if not d.startswith("!")}
         negatives = {d[1:] for d in detected_items if d.startswith("!")}
-
-        # Items for which "not detected" is reliable evidence of absence.
-        reliable_absence = set(self.negative_classes.values())
 
         states = {}
         for item in self.required:
             if item in positives and item not in negatives:
                 states[item] = "PRESENT"
             elif item in negatives:
-                states[item] = "ABSENT"            # explicit no-X detection
-            elif item in reliable_absence:
-                states[item] = "ABSENT"            # model reasons about this item
+                states[item] = "ABSENT"     # explicit no-X detection → violation
             else:
-                states[item] = "UNKNOWN"           # missed detection vs truly absent
+                states[item] = "UNKNOWN"    # model didn't produce evidence either way
         return states
 
     def compliance(self, detected_items):

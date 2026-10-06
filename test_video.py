@@ -7,14 +7,15 @@ confirmation pipeline over a video file, and for every CONFIRMED violation it
 saves an annotated snapshot that highlights WHO violated and WHAT PPE is
 missing. Also writes a CSV log and prints a summary.
 
-This is a repeatable alternative to the live webcam demo: point it at a clip,
-run it, then inspect output/test_video/ to see the evidence.
-
 Usage:
     python test_video.py --source path/to/clip.mp4
     python test_video.py --source clip.mp4 --require helmet,vest,gloves
     python test_video.py --source clip.mp4 --no-preview
     python test_video.py --source clip.mp4 --out-dir output/my_test
+
+Diagnostic mode (raw model, no pipeline):
+    python test_video.py --source clip.mp4 --diagnose
+    python test_video.py --source frame.jpg --diagnose --diag-conf 0.05
 
 Each confirmed violation produces:
     output/test_video/snapshots/violation_id<ID>_<item>_<time>.jpg   (annotated)
@@ -44,6 +45,13 @@ def parse_args():
     p.add_argument("--out-dir", default="output/test_video", help="Output directory")
     p.add_argument("--no-preview", action="store_true", help="Run headless")
     p.add_argument("--stride", type=int, help="Process every Nth frame")
+    p.add_argument("--diagnose", action="store_true",
+                   help="Raw-model diagnostic: print every detection + confidence "
+                        "(no pipeline/compliance/snapshots), then exit")
+    p.add_argument("--diag-conf", type=float, default=0.05,
+                   help="Confidence floor for --diagnose (low, to see faint hits)")
+    p.add_argument("--every", type=int, default=30,
+                   help="For --diagnose on video: sample every Nth frame")
     return p.parse_args()
 
 
@@ -108,6 +116,70 @@ def annotate_violation(frame, violating_pr, all_persons, frame_no):
     return img
 
 
+def run_diagnose(args):
+    """
+    Run the raw model directly and print every detection with confidence.
+    No pipeline, no compliance logic -- shows WHY an item is / isn't detected.
+    Works on an image or a video (sampled every --every frames).
+    """
+    from ultralytics import YOLO
+    model = YOLO(args.model or config.MODEL_PATH)
+    print("Model classes:", model.names)
+    print(f"Diagnose: {args.source}  (conf floor={args.diag_conf})\n")
+
+    def show(result, tag=""):
+        counts = Counter()
+        if result.boxes is None or len(result.boxes) == 0:
+            print(f"{tag}  (no detections)")
+            return counts
+        rows = []
+        for box in result.boxes:
+            name = model.names[int(box.cls[0])]
+            conf = float(box.conf[0])
+            xyxy = [round(x, 1) for x in box.xyxy[0].tolist()]
+            rows.append((name, conf, xyxy))
+            counts[name] += 1
+        for name, conf, xyxy in sorted(rows, key=lambda r: -r[1]):
+            print(f"{tag}  {name:12s} conf={conf:.3f} box={xyxy}")
+        return counts
+
+    total = Counter()
+    ext = os.path.splitext(args.source)[1].lower()
+    if ext in (".mp4", ".avi", ".mov", ".mkv"):
+        cap = cv2.VideoCapture(args.source)
+        idx = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx % args.every == 0:
+                total.update(show(model(frame, conf=args.diag_conf, verbose=False)[0],
+                                  tag=f"[f{idx}]"))
+            idx += 1
+        cap.release()
+    else:
+        total.update(show(model(args.source, conf=args.diag_conf, verbose=False)[0]))
+
+    print("\n==== DETECTION TOTALS ====")
+    for name, n in total.most_common():
+        print(f"  {name:12s} {n}")
+
+    hp, hn = total.get("helmet", 0), total.get("no_helmet", 0)
+    print("\n==== HELMET READ ====")
+    print(f"  helmet (worn): {hp}   no_helmet (bare): {hn}")
+    if hp == 0 and hn == 0:
+        print("  -> No helmet evidence at all: false negative / domain mismatch. "
+              "UNKNOWN is correct; model needs work.")
+    elif hp > 0 and hn == 0:
+        print("  -> Model sees worn helmets. If the app still flagged violations, "
+              "lower CONF_THRESH / raise sensitivity.")
+    elif hn > 0 and hp == 0:
+        print("  -> Only 'no_helmet' seen. If a helmet was worn, that's a model "
+              "error (retrain); if truly bare, it's correct.")
+    else:
+        print("  -> Mixed; inspect per-frame rows above.")
+
+
 def main():
     args = parse_args()
     apply_overrides(args)
@@ -115,6 +187,10 @@ def main():
     if not os.path.exists(args.source):
         print(f"[ERROR] Video not found: {args.source}")
         sys.exit(1)
+
+    if args.diagnose:
+        run_diagnose(args)
+        return
 
     out_dir = args.out_dir
     snap_dir = os.path.join(out_dir, "snapshots")

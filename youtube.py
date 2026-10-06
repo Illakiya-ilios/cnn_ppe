@@ -17,7 +17,7 @@ import sys
 
 from yt_dlp import YoutubeDL
 
-DEFAULT_URL = "https://youtu.be/PiklWx68dSI?si=aahQSyoqMCZx9mfu"
+DEFAULT_URL = "https://youtu.be/Xe46KDUUNuM?si=-T9ouumDojkKksWC"
 
 url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
 

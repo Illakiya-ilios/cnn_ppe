@@ -1,18 +1,23 @@
 """
 Unit tests for the three-state compliance logic.
 
+Corrected rule: ABSENT requires an EXPLICIT negative detection ("!helmet").
+"Neither the item nor its negative class detected" is UNKNOWN, never a
+violation -- because the model simply produced no evidence either way.
+
 With REQUIRED_EQUIPMENT = {helmet, vest} and NEGATIVE_CLASSES = {no-helmet:helmet}:
-  - helmet has reliable absence evidence (no-helmet class) -> absence is ABSENT
-  - vest has NO negative class -> absence is UNKNOWN, not a violation
+  - helmet detected        -> PRESENT
+  - !helmet (no-helmet box) -> ABSENT  (violation)
+  - helmet not detected, no !helmet -> UNKNOWN (NOT a violation)
+  - vest has no negative class -> absence is always UNKNOWN
 
 Run: python test_compliance.py
 """
 
 
 class _Stub:
-    """Minimal object exposing item_states/compliance with controlled config."""
     required = {"helmet", "vest"}
-    negative_classes = {"no-helmet": "helmet"}  # helmet reliably reasoned about
+    negative_classes = {"no-helmet": "helmet"}
 
     from detector import PPEDetector
     item_states = PPEDetector.item_states
@@ -22,30 +27,35 @@ class _Stub:
 def main():
     s = _Stub()
 
-    # Both present -> Compliant
+    # Both detected -> Compliant
     assert s.compliance({"helmet", "vest"}) == ("Compliant", set())
 
-    # Helmet present, vest NOT detected -> vest is UNKNOWN (no neg class),
-    # so NOT a violation; overall Uncertain.
+    # Helmet present, vest not detected -> vest UNKNOWN -> Uncertain (not violation)
     status, missing = s.compliance({"helmet"})
     assert status == "Uncertain" and missing == set(), (status, missing)
 
-    # Explicit no-helmet -> helmet ABSENT -> Non-compliant for helmet.
+    # Explicit no-helmet -> helmet ABSENT -> Non-compliant
     status, missing = s.compliance({"vest", "!helmet"})
     assert status == "Non-compliant" and missing == {"helmet"}, (status, missing)
 
-    # Nothing detected at all: helmet is reliably-reasoned (ABSENT), vest UNKNOWN
-    # -> an ABSENT item exists -> Non-compliant on helmet only.
+    # THE KEY FIX: nothing detected, NO explicit negative -> everything UNKNOWN
+    # -> Uncertain, NOT a violation. (Previously this wrongly returned
+    # Non-compliant for helmet because helmet was in reliable_absence.)
     status, missing = s.compliance(set())
-    assert status == "Non-compliant" and missing == {"helmet"}, (status, missing)
+    assert status == "Uncertain" and missing == set(), (status, missing)
 
-    # Vest present, helmet not detected -> helmet ABSENT (reliable) -> violation.
+    # Vest detected but helmet not detected (no !helmet) -> helmet UNKNOWN,
+    # vest PRESENT -> Uncertain, NOT a violation.
     status, missing = s.compliance({"vest"})
-    assert status == "Non-compliant" and missing == {"helmet"}, (status, missing)
+    assert status == "Uncertain" and missing == set(), (status, missing)
 
     # item_states sanity
     states = s.item_states({"helmet"})
     assert states["helmet"] == "PRESENT"
+    assert states["vest"] == "UNKNOWN"
+
+    states = s.item_states({"!helmet"})
+    assert states["helmet"] == "ABSENT"
     assert states["vest"] == "UNKNOWN"
 
     print("All compliance tests passed.")
