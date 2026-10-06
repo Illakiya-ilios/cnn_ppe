@@ -1,0 +1,267 @@
+"""
+Test the PPE pipeline on a PRE-RECORDED video.
+================================================
+
+Runs the full detection -> assignment -> tracking -> compliance -> temporal
+confirmation pipeline over a video file, and for every CONFIRMED violation it
+saves an annotated snapshot that highlights WHO violated and WHAT PPE is
+missing. Also writes a CSV log and prints a summary.
+
+This is a repeatable alternative to the live webcam demo: point it at a clip,
+run it, then inspect output/test_video/ to see the evidence.
+
+Usage:
+    python test_video.py --source path/to/clip.mp4
+    python test_video.py --source clip.mp4 --require helmet,vest,gloves
+    python test_video.py --source clip.mp4 --no-preview
+    python test_video.py --source clip.mp4 --out-dir output/my_test
+
+Each confirmed violation produces:
+    output/test_video/snapshots/violation_id<ID>_<item>_<time>.jpg   (annotated)
+    a row in output/test_video/violations.csv
+and a final summary is printed and saved to output/test_video/summary.json.
+"""
+
+import argparse
+import csv
+import json
+import os
+import sys
+from collections import Counter
+from datetime import datetime
+
+import cv2
+
+import config
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Test PPE pipeline on a recorded video")
+    p.add_argument("--source", required=True, help="Path to the video file")
+    p.add_argument("--model", help="Override model path (default: config/ppe_model.pt)")
+    p.add_argument("--require", help="Comma-separated required PPE (e.g. helmet,vest,gloves)")
+    p.add_argument("--conf", type=float, help="Person/equipment confidence override")
+    p.add_argument("--out-dir", default="output/test_video", help="Output directory")
+    p.add_argument("--no-preview", action="store_true", help="Run headless")
+    p.add_argument("--stride", type=int, help="Process every Nth frame")
+    return p.parse_args()
+
+
+def apply_overrides(args):
+    ov = {}
+    if args.model:
+        ov["MODEL_PATH"] = args.model
+    if args.require:
+        ov["REQUIRED_EQUIPMENT"] = {s.strip() for s in args.require.split(",") if s.strip()}
+    if args.conf is not None:
+        ov["CONF_THRESH"] = args.conf
+        ov["PERSON_CONF_THRESH"] = args.conf
+    if args.stride is not None:
+        ov["FRAME_STRIDE"] = max(1, args.stride)
+    if args.no_preview:
+        ov["SHOW_PREVIEW"] = False
+    # Snapshots are produced by this script directly (annotated), so disable
+    # the pipeline's own raw-frame snapshotting to avoid duplicates.
+    ov["SAVE_ALERT_SNAPSHOTS"] = False
+    config.apply_overrides(ov)
+
+
+def status_color(status):
+    return {
+        "Compliant": config.COLOR_COMPLIANT,
+        "Uncertain": config.COLOR_UNCERTAIN,
+        "Non-compliant": config.COLOR_NONCOMPLIANT,
+    }.get(status, config.COLOR_UNCERTAIN)
+
+
+def draw_person(frame, pr):
+    x1, y1, x2, y2 = [int(v) for v in pr.box]
+    color = status_color(pr.status)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+    label = f"ID {pr.person_id}: {pr.status}"
+    if pr.missing:
+        label += f"  missing: {', '.join(sorted(pr.missing))}"
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    cv2.rectangle(frame, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
+    cv2.putText(frame, label, (x1 + 4, y1 - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, config.COLOR_TEXT, 1, cv2.LINE_AA)
+
+
+def annotate_violation(frame, violating_pr, all_persons, frame_no):
+    """Return a copy of the frame with every person drawn and a banner."""
+    img = frame.copy()
+    for pr in all_persons:
+        draw_person(img, pr)
+    # Red evidence banner describing the specific violation.
+    h, w = img.shape[:2]
+    missing = ", ".join(sorted(violating_pr.missing)) or "PPE"
+    banner = (f"VIOLATION  ID {violating_pr.person_id}  "
+              f"missing: {missing}  frame#{frame_no}")
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, 0), (w, 34), config.COLOR_NONCOMPLIANT, -1)
+    cv2.addWeighted(overlay, 0.65, img, 0.35, 0, img)
+    cv2.putText(img, banner, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                config.COLOR_TEXT, 2, cv2.LINE_AA)
+    cv2.putText(img, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                config.COLOR_TEXT, 1, cv2.LINE_AA)
+    return img
+
+
+def main():
+    args = parse_args()
+    apply_overrides(args)
+
+    if not os.path.exists(args.source):
+        print(f"[ERROR] Video not found: {args.source}")
+        sys.exit(1)
+
+    out_dir = args.out_dir
+    snap_dir = os.path.join(out_dir, "snapshots")
+    os.makedirs(snap_dir, exist_ok=True)
+    csv_path = os.path.join(out_dir, "violations.csv")
+    summary_path = os.path.join(out_dir, "summary.json")
+    annotated_video = os.path.join(out_dir, "annotated.mp4")
+
+    # Build pipeline components (reuse the production pipeline).
+    from logging_setup import get_logger
+    from detector import PPEDetector
+    from tracker import CentroidTracker
+    from alerts import AlertManager, ViolationLogger, SessionReporter
+    from pipeline import CompliancePipeline
+
+    log = get_logger("test_video")
+    log.info("Testing video: %s", args.source)
+
+    detector = PPEDetector()
+    log.info("Model person=%s required=%s equipment=%s",
+             detector.person_class, sorted(detector.required),
+             sorted(detector.equipment_classes))
+
+    tracker = CentroidTracker(
+        max_lost=config.MAX_LOST, dist_thresh=config.DIST_THRESH,
+        iou_weight=config.TRACK_IOU_WEIGHT, min_iou=config.TRACK_MIN_IOU,
+        dist_scale=config.TRACK_DIST_SCALE,
+    )
+    # Use a short cooldown so the test captures distinct violation events but
+    # not every single frame.
+    alerts = AlertManager(cooldown_seconds=config.ALERT_COOLDOWN_SECONDS)
+    alerts._backend = None  # no pop-ups during a batch video test; log instead
+    inner_logger = ViolationLogger(os.path.join(out_dir, "_pipeline_violations.csv"))
+    reporter = SessionReporter(os.path.join(out_dir, "_pipeline_report.json"))
+    pipeline = CompliancePipeline(detector, tracker, alerts, inner_logger, reporter)
+
+    cap = cv2.VideoCapture(args.source)
+    if not cap.isOpened():
+        print(f"[ERROR] Could not open video: {args.source}")
+        sys.exit(1)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+    fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Video: {w}x{h} @ {fps:.1f}fps, {total} frames")
+
+    writer = cv2.VideoWriter(annotated_video, cv2.VideoWriter_fourcc(*"mp4v"),
+                             fps, (w, h))
+
+    # CSV of snapshots this script captures.
+    csv_fh = open(csv_path, "w", newline="", encoding="utf-8")
+    csv_w = csv.writer(csv_fh)
+    csv_w.writerow(["frame", "person_id", "missing_items", "snapshot"])
+
+    # Track which (person, missing-set) we've already snapshotted recently, so
+    # one continuous violation yields one snapshot per cooldown, not hundreds.
+    last_snapshot_frame = {}
+    cooldown_frames = int(config.ALERT_COOLDOWN_SECONDS * fps)
+    snapshots_taken = 0
+    per_person = Counter()
+    per_item = Counter()
+    frame_no = 0
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frame_no += 1
+        if frame_no % config.FRAME_STRIDE != 0:
+            # still write the frame so the annotated video stays in sync
+            writer.write(frame)
+            continue
+
+        result = pipeline.process(frame)
+
+        # Draw all persons for the annotated output video.
+        annotated_frame = frame.copy()
+        for pr in result.persons:
+            draw_person(annotated_frame, pr)
+        hud = (f"persons={result.person_count} "
+               f"violations={result.violation_count} snaps={snapshots_taken}")
+        cv2.putText(annotated_frame, hud, (8, h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        writer.write(annotated_frame)
+
+        # For each confirmed violator, save an annotated evidence snapshot
+        # (respecting a per-person cooldown so we don't flood).
+        for pr in result.persons:
+            if pr.status != "Non-compliant":
+                continue
+            pid = pr.person_id
+            last = last_snapshot_frame.get(pid, -10**9)
+            if frame_no - last < cooldown_frames:
+                continue
+            last_snapshot_frame[pid] = frame_no
+
+            miss = "_".join(sorted(pr.missing)) or "PPE"
+            ts = datetime.now().strftime("%H%M%S")
+            fname = f"violation_id{pid}_{miss}_f{frame_no}_{ts}.jpg"
+            fpath = os.path.join(snap_dir, fname)
+            snap = annotate_violation(frame, pr, result.persons, frame_no)
+            cv2.imwrite(fpath, snap)
+
+            csv_w.writerow([frame_no, pid, "|".join(sorted(pr.missing)), fpath])
+            csv_fh.flush()
+            snapshots_taken += 1
+            per_person[pid] += 1
+            for it in pr.missing:
+                per_item[it] += 1
+            log.warning("Snapshot saved: ID=%s missing=%s -> %s",
+                        pid, sorted(pr.missing), fpath)
+
+        if not args.no_preview:
+            cv2.imshow("PPE Video Test", annotated_frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("Stopped by user.")
+                break
+
+    cap.release()
+    writer.release()
+    csv_fh.close()
+    if not args.no_preview:
+        cv2.destroyAllWindows()
+
+    summary = {
+        "source": args.source,
+        "frames": frame_no,
+        "required_equipment": sorted(detector.required),
+        "snapshots_taken": snapshots_taken,
+        "unique_violators": len(per_person),
+        "violations_by_person": dict(per_person),
+        "missing_item_counts": dict(per_item),
+        "annotated_video": annotated_video,
+        "snapshots_dir": snap_dir,
+        "csv": csv_path,
+    }
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+    inner_logger.close()
+
+    print("\n==== TEST SUMMARY ====")
+    print(json.dumps(summary, indent=2))
+    print(f"\nAnnotated video : {annotated_video}")
+    print(f"Snapshots       : {snap_dir}  ({snapshots_taken} saved)")
+    print(f"Violations CSV  : {csv_path}")
+    print(f"Summary JSON    : {summary_path}")
+
+
+if __name__ == "__main__":
+    main()
