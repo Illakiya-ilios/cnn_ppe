@@ -161,8 +161,15 @@ class PPEDetector:
                     continue
                 main_persons.append(coords)
             elif name in self.equipment_classes:
+                if conf < config.EQUIPMENT_CONF_THRESH:
+                    continue
                 equipment.append((name, coords))
             elif name in self.negative_classes:
+                # Negative ("no_X") detections run weaker than positives in
+                # practice, so they get their own (lower) threshold -- but it
+                # must be high enough to avoid false violations from noise.
+                if conf < config.NEGATIVE_CONF_THRESH:
+                    continue
                 equipment.append(("!" + self.negative_classes[name], coords))
         return equipment, main_persons
 

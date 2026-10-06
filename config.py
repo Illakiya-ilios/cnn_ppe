@@ -162,13 +162,24 @@ LOG_LEVEL = _env("LOG_LEVEL", "INFO")
 # ---------------------------------------------------------------------------
 # Detection / tracking thresholds
 # ---------------------------------------------------------------------------
-CONF_THRESH = _env("CONF_THRESH", 0.25, float)   # Base YOLO confidence (equipment)
+# Base YOLO confidence floor for the model call. Kept low so weaker negative
+# ("no_X") detections surface; per-category thresholds below do the real
+# filtering. Diagnostics on real footage showed worn-PPE at 0.5-0.86 but valid
+# "no_helmet" signals down around 0.25-0.48, so the floor must sit below those.
+CONF_THRESH = _env("CONF_THRESH", 0.20, float)
+
+# Positive equipment (helmet/vest/...) detections are strong in practice, so
+# require solid confidence to count them as "worn".
+EQUIPMENT_CONF_THRESH = _env("EQUIPMENT_CONF_THRESH", 0.40, float)
+
+# Negative ("no_X") detections run weaker; use a lower bar than positives, but
+# high enough to reject the 0.1-0.2 noise band and avoid false violations.
+NEGATIVE_CONF_THRESH = _env("NEGATIVE_CONF_THRESH", 0.35, float)
 
 # Person detections need a higher confidence than equipment, but not too high:
-# the PPE model's "human" class over-triggers on person-shaped objects
-# (bags, chairs) at ~0.12-0.20 confidence, yet real people -- especially close
-# to the camera -- can sit around 0.30-0.80. 0.28 sits above the junk band and
-# below genuine people. Tune per site via PPE_PERSON_CONF_THRESH.
+# the model's person class over-triggers on person-shaped objects at low
+# confidence, yet real people -- especially close to the camera -- can sit
+# around 0.30-0.80. 0.28 sits above the junk band and below genuine people.
 PERSON_CONF_THRESH = _env("PERSON_CONF_THRESH", 0.28, float)
 
 # Reject person boxes smaller than this fraction of the frame area (filters
