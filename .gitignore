@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pt
+output/
+data/
+_sample.mp4
+_test_*
