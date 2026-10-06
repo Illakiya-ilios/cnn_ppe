@@ -1,7 +1,30 @@
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+# Model weights (large binaries — download/train separately)
 *.pt
+
+# Training artifacts
+datasets/
+runs/
+
+# Output (regenerated each run)
 output/
 data/
+
+# Test videos (downloaded via youtube.py)
+test_clip*.mp4
 _sample.mp4
 _test_*
+
+# IDE
+.vscode/
+.kiro/
+
+# External cloned repos
+cnn_ppe/
+
+# Client requirement PDFs (keep locally, not in repo)
+*.pdf
