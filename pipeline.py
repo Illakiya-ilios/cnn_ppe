@@ -40,6 +40,7 @@ class PersonResult:
     raw_status: str = ""                          # this-frame status
     missing: set = field(default_factory=set)
     detected: set = field(default_factory=set)
+    states: dict = field(default_factory=dict)    # item -> PRESENT/ABSENT/UNKNOWN
 
 
 @dataclass
@@ -73,6 +74,7 @@ class CompliancePipeline:
 
         for idx, pbox in enumerate(persons):
             detected_items = assigned[idx]
+            states = self.detector.item_states(detected_items)
             raw_status, missing = self.detector.compliance(detected_items)
             person_id = self._match_track_id(tracked, pbox)
 
@@ -91,6 +93,7 @@ class CompliancePipeline:
                 raw_status=raw_status,
                 missing=set(self._last_missing[person_id]) if confirmed == "Non-compliant" else set(),
                 detected=set(detected_items),
+                states=states,
             )
             result.persons.append(pr)
 

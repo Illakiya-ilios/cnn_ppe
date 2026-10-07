@@ -246,6 +246,20 @@ COLOR_NOPERSON = (150, 150, 150)     # grey - no person detected
 COLOR_TEXT = (255, 255, 255)
 
 
+# Set of class-config fields that were explicitly pinned at runtime (via CLI
+# apply_overrides). The detector must NOT let model-profile auto-detection
+# overwrite these. Starts from the env-pinned fields detected at import.
+PINNED_CLASS_FIELDS = set()
+if os.environ.get("PPE_PERSON_CLASS") is not None:
+    PINNED_CLASS_FIELDS.add("PERSON_CLASS")
+if os.environ.get("PPE_EQUIPMENT_CLASSES") is not None:
+    PINNED_CLASS_FIELDS.add("EQUIPMENT_CLASSES")
+if os.environ.get("PPE_REQUIRED_EQUIPMENT") is not None:
+    PINNED_CLASS_FIELDS.add("REQUIRED_EQUIPMENT")
+if os.environ.get("PPE_NEGATIVE_CLASSES") is not None:
+    PINNED_CLASS_FIELDS.add("NEGATIVE_CLASSES")
+
+
 def apply_overrides(overrides: dict):
     """Apply a dict of {SETTING_NAME: value} onto this module (used by CLI)."""
     g = globals()
@@ -255,6 +269,11 @@ def apply_overrides(overrides: dict):
         if key == "VIDEO_SOURCE":
             value = _coerce_source(value)
         g[key] = value
+        # Any class-config field set here is now explicitly pinned, so model
+        # profile auto-detection won't clobber it (fixes --require being lost).
+        if key in ("PERSON_CLASS", "EQUIPMENT_CLASSES", "REQUIRED_EQUIPMENT",
+                   "NEGATIVE_CLASSES"):
+            PINNED_CLASS_FIELDS.add(key)
 
 
 def as_dict():

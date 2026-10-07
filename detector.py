@@ -63,21 +63,35 @@ class PPEDetector:
                      pm_path, config.MODEL_PATH)
 
     def _auto_select_profile(self):
-        """Match the loaded model's class names to a known profile."""
-        if config.CLASS_CONFIG_FROM_ENV:
-            log.info("Class config pinned via env; skipping profile auto-detect.")
-            return
+        """
+        Match the loaded model's class names to a known profile and apply it.
+
+        Fields the operator explicitly pinned (via env or CLI --require etc.,
+        tracked in config.PINNED_CLASS_FIELDS) are NOT overwritten -- so e.g.
+        `--require helmet,vest,gloves` is preserved even though the profile's
+        default required set is {helmet, vest}.
+        """
+        pinned = getattr(config, "PINNED_CLASS_FIELDS", set())
         model_classes = set(self.names.values())
         for name, prof in config.MODEL_PROFILES.items():
             sig = prof.get("signature", set())
             if sig and sig.issubset(model_classes):
-                self.person_class = prof["person_class"]
-                self.equipment_classes = set(prof["equipment_classes"])
-                self.required = set(prof["required_equipment"])
-                self.negative_classes = dict(prof["negative_classes"])
-                log.info("Auto-selected model profile '%s': person=%s required=%s",
-                         name, self.person_class, sorted(self.required))
+                if "PERSON_CLASS" not in pinned:
+                    self.person_class = prof["person_class"]
+                if "EQUIPMENT_CLASSES" not in pinned:
+                    self.equipment_classes = set(prof["equipment_classes"])
+                if "REQUIRED_EQUIPMENT" not in pinned:
+                    self.required = set(prof["required_equipment"])
+                if "NEGATIVE_CLASSES" not in pinned:
+                    self.negative_classes = dict(prof["negative_classes"])
+                log.info("Auto-selected profile '%s': person=%s required=%s "
+                         "equipment=%s (pinned: %s)",
+                         name, self.person_class, sorted(self.required),
+                         sorted(self.equipment_classes),
+                         sorted(pinned) or "none")
                 return
+        log.info("No known profile matched; using config values. required=%s",
+                 sorted(self.required))
         log.info("No known profile matched; using config defaults. "
                  "Model classes: %s", sorted(model_classes))
 

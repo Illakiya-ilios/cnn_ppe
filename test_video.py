@@ -17,6 +17,10 @@ Diagnostic mode (raw model, no pipeline):
     python test_video.py --source clip.mp4 --diagnose
     python test_video.py --source frame.jpg --diagnose --diag-conf 0.05
 
+Per-person assignment debug (shows each person's per-item PPE state):
+    python test_video.py --source clip.mp4 --debug
+    python test_video.py --source clip.mp4 --debug --require helmet,vest,gloves
+
 Each confirmed violation produces:
     output/test_video/snapshots/violation_id<ID>_<item>_<time>.jpg   (annotated)
     a row in output/test_video/violations.csv
@@ -52,6 +56,11 @@ def parse_args():
                    help="Confidence floor for --diagnose (low, to see faint hits)")
     p.add_argument("--every", type=int, default=30,
                    help="For --diagnose on video: sample every Nth frame")
+    p.add_argument("--debug", action="store_true",
+                   help="Per-person assignment debug: print each tracked person's "
+                        "per-item PPE state (PRESENT/ABSENT/UNKNOWN) and draw it")
+    p.add_argument("--debug-every", type=int, default=15,
+                   help="Print the --debug breakdown every Nth processed frame")
     return p.parse_args()
 
 
@@ -93,6 +102,49 @@ def draw_person(frame, pr):
     cv2.rectangle(frame, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
     cv2.putText(frame, label, (x1 + 4, y1 - 6),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, config.COLOR_TEXT, 1, cv2.LINE_AA)
+
+
+_STATE_MARK = {"PRESENT": "OK ", "ABSENT": "XX ", "UNKNOWN": "?? "}
+
+
+def print_person_breakdown(result, frame_no, log):
+    """Print a per-person, per-item assignment breakdown to the console."""
+    if not result.persons:
+        print(f"[f{frame_no}] no persons")
+        return
+    print(f"[f{frame_no}] {result.person_count} person(s):")
+    for pr in result.persons:
+        print(f"  Person ID {pr.person_id}  status={pr.status} "
+              f"(this-frame={pr.raw_status})")
+        if pr.states:
+            for item in sorted(pr.states):
+                state = pr.states[item]
+                mark = {"PRESENT": "[v]", "ABSENT": "[x]", "UNKNOWN": "[?]"}.get(state, "[?]")
+                print(f"      {mark} {item:10s} {state}")
+        if pr.detected:
+            print(f"      detected on person: {sorted(pr.detected)}")
+
+
+def draw_person_debug(frame, pr):
+    """Draw the per-item state breakdown next to the person box."""
+    x1, y1, x2, y2 = [int(v) for v in pr.box]
+    lines = [f"ID {pr.person_id}: {pr.status}"]
+    for item in sorted(pr.states):
+        st = pr.states[item]
+        lines.append(f"  {_STATE_MARK.get(st, '?? ')}{item}={st}")
+    # Background panel for readability.
+    y = y1 + 2
+    for i, line in enumerate(lines):
+        (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        yy = y + i * (th + 6)
+        cv2.rectangle(frame, (x2 + 4, yy), (x2 + 10 + tw, yy + th + 4),
+                      (0, 0, 0), -1)
+        col = (config.COLOR_COMPLIANT if "PRESENT" in line
+               else config.COLOR_NONCOMPLIANT if "ABSENT" in line
+               else config.COLOR_UNCERTAIN if "UNKNOWN" in line
+               else config.COLOR_TEXT)
+        cv2.putText(frame, line, (x2 + 7, yy + th),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
 
 
 def annotate_violation(frame, violating_pr, all_persons, frame_no):
@@ -266,10 +318,16 @@ def main():
 
         result = pipeline.process(frame)
 
+        # Debug: periodic per-person assignment breakdown to the console.
+        if args.debug and (frame_no // config.FRAME_STRIDE) % args.debug_every == 0:
+            print_person_breakdown(result, frame_no, log)
+
         # Draw all persons for the annotated output video.
         annotated_frame = frame.copy()
         for pr in result.persons:
             draw_person(annotated_frame, pr)
+            if args.debug:
+                draw_person_debug(annotated_frame, pr)
         hud = (f"persons={result.person_count} "
                f"violations={result.violation_count} snaps={snapshots_taken}")
         cv2.putText(annotated_frame, hud, (8, h - 12),
