@@ -213,3 +213,23 @@ python test_pipeline.py     # loads model, exercises full wiring
 - For research / authorized workplace safety monitoring. Ensure compliance with
   local privacy regulations for workplace video surveillance.
 ```
+Multiple CCTV cameras
+        ↓
+Edge inference
+        ↓
+Person tracking
+        ↓
+PPE compliance
+        ↓
+Zone-specific rules
+        ↓
+Temporal confirmation
+        ↓
+Alert service
+        ↓
+Cloud
+ ┌──────┼─────────┐
+ ↓      ↓         ↓
+S3   DynamoDB   CloudWatch
+        ↓
+     Dashboard
